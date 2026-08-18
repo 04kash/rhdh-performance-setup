@@ -32,28 +32,28 @@ These fixes apply to any large LDAP / IBM OpenShift run, not one person’s name
 | Result summaries | `results/*/` | Historical record, no huge CSVs |
 | Cluster-specific notes | `README.md` § IBM QE | Shared cluster quirks |
 
-## Do not duplicate upstream
+## Vendored here (until upstream merges)
 
-Avoid copying into this repo:
+| Artifact | Path | Notes |
+|----------|------|-------|
+| Core harness patch | `harness-patches/0001-harness-core.patch` | `git apply` onto stock `main` |
+| Isolation scripts | `harness-patches/scenarios/isolation/` | Copied by `apply-overlay.sh` |
+| 8Gi preset | `env/combined-xl-reuse-github.env` | Small-cluster variant |
 
-- `ci-scripts/rhdh-setup/deploy.sh` (full file)
-- `ci-scripts/setup.sh`
-- Helm/OLM templates
-- `Makefile`, Locust scenarios, CI config
+Refresh instructions: `harness-patches/README.md`
 
-Pin a **commit SHA or branch** in your run notes instead:
+## Do not vendor here
 
-```bash
-cd backstage-performance
-git checkout <branch-or-sha>   # e.g. isolation-xl branch
-```
+- Ladder (`scenarios/isolation/ladder/`) — optional, not needed for combined XL
+- Run results, CSVs, logs
+- `combined-xl-locations.yaml` — generated per scratch GitHub repo
 
 ## Official perf team reference
 
-In `backstage-performance`:
+In upstream `backstage-performance` (no isolation folder today):
 
-- `ci-scripts/release-tests.sh` → `large_scale_xl_compare_test()`
-- `scenarios/isolation/combined-xl.env` — full 31Gi × 3 preset (needs large nodes)
+- `ci-scripts/release-tests.sh` → `large_scale_xl_compare_test()` — 31Gi × 3, includes Locust
+- Vendored `harness-patches/scenarios/isolation/combined-xl.env` — same sizing as official test
 
 ## GitHub catalog locations
 

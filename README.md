@@ -4,8 +4,9 @@ Thin runbook and env overlays for running the **combined XL ingest** scenario
 (30k users / 500k groups / 35k Components / 35k APIs) on memory-constrained
 OpenShift clusters.
 
-This repo does **not** duplicate the [backstage-performance](https://github.com/redhat-performance/backstage-performance)
-harness. It documents how we ran it, which env vars to use, and records results.
+This repo vendors the **minimal harness patches** needed to run combined XL on stock
+[backstage-performance](https://github.com/redhat-performance/backstage-performance)
+until those changes land upstream. It also holds env overlays and recorded results.
 
 ## vs official performance team preset
 
@@ -22,7 +23,7 @@ See [UPSTREAM.md](UPSTREAM.md) for what belongs in the main harness vs here.
 ## Prerequisites
 
 1. **OpenShift cluster** with admin `oc` access (`export KUBECONFIG=...`)
-2. **backstage-performance** checkout with isolation-scenario patches (see UPSTREAM.md)
+2. **backstage-performance** checkout (upstream `main` — patches applied by this repo)
 3. **Secrets** (never commit these):
    - `quay.token` — image pull secret for Quay.io
    - `github.token`, `github.user`, `github.repo` — scratch repo for catalog YAML
@@ -35,31 +36,33 @@ See [UPSTREAM.md](UPSTREAM.md) for what belongs in the main harness vs here.
 git clone https://github.com/redhat-performance/backstage-performance.git
 git clone https://github.com/04kash/rhdh-performance-setup.git
 
-# 2. Apply harness patches (see UPSTREAM.md) or use a branch that includes them
-
-# 3. Install env overlay
+# 2. Apply vendored harness patch + isolation scenarios
 cd rhdh-performance-setup
-chmod +x scripts/*.sh
+chmod +x scripts/*.sh harness-patches/scenarios/isolation/*.sh
 ./scripts/apply-overlay.sh ../backstage-performance
 
-# 4. Local secrets (gitignored)
+# 3. Local secrets (gitignored)
 cp env/.setenv.local.example ../backstage-performance/.setenv.local
 # Edit paths and credentials in .setenv.local
 
-# 5. Choose a dedicated namespace
+# 4. Choose a dedicated namespace
 export RHDH_NAMESPACE=rhdh-performance-xl
 
-# 6. One-time: push 70k catalog entities to your scratch GitHub repo
+# 5. One-time: push 70k catalog entities to your scratch GitHub repo
 cd ../backstage-performance
 ./scenarios/isolation/push-github-xl.sh
+cp .tmp/locations.yaml scenarios/isolation/combined-xl-locations.yaml
 
-# 7. Run combined XL (clean deploy + ingest watch)
+# 6. Run combined XL (clean deploy + ingest watch)
 ./scenarios/isolation/run.sh combined-xl-reuse-github
 ```
 
+`apply-overlay.sh` applies `harness-patches/0001-harness-core.patch` to upstream
+`deploy.sh` / `setup.sh` / templates, then copies `scenarios/isolation/`.
+
 `run.sh` runs `make clean-all` then `ci-scripts/setup.sh`. With `PRE_LOAD_DB=false`,
-it restores catalog location URLs from `combined-xl-locations.yaml` in the harness
-(generated when you ran `push-github-xl.sh`).
+it restores `combined-xl-locations.yaml` after clean-all (you generate this locally;
+it is not committed — see `locations/README.md`).
 
 ## Watch during ingest
 
@@ -97,10 +100,11 @@ OpenShift console URL is cluster-specific — use `oc whoami --show-console` aft
 ## Repository layout
 
 ```
-env/           # Scenario env overlays (no secrets)
-scripts/       # Metrics poller, apply-overlay helper
-results/       # Summaries and analysis only (no raw logs)
-UPSTREAM.md    # What to contribute back to backstage-performance
+harness-patches/   # Patch + scenarios/isolation scripts (vendored from local harness)
+env/               # Scenario env overlays (no secrets)
+scripts/           # apply-overlay, metrics poller
+results/           # Summaries and analysis only (no raw logs)
+UPSTREAM.md        # What to contribute back to backstage-performance
 ```
 
 ## Security

@@ -1,0 +1,508 @@
+diff --git a/ci-scripts/rhdh-setup/create_resource.sh b/ci-scripts/rhdh-setup/create_resource.sh
+index b15ec7b..07adf24 100755
+--- a/ci-scripts/rhdh-setup/create_resource.sh
++++ b/ci-scripts/rhdh-setup/create_resource.sh
+@@ -140,8 +140,35 @@ create_per_grp() {
+   if [[ 'create_api' == "${1}" ]]; then clone_and_upload "api-*.yaml"; fi
+ }
+ 
++check_github_rate_limit() {
++  local min_remaining="${GITHUB_RATE_LIMIT_MIN_REMAINING:-200}"
++  local response remaining reset
++  response=$(curl -s -H "Accept: application/vnd.github+json" \
++    -H "Authorization: token ${GITHUB_TOKEN}" \
++    -H "X-GitHub-Api-Version: 2022-11-28" \
++    https://api.github.com/rate_limit)
++  if ! echo "$response" | jq empty 2>/dev/null; then
++    log_warn "Could not read GitHub rate limit; sleeping ${GITHUB_UPLOAD_SLEEP_SECONDS:-45}s before retry"
++    sleep "${GITHUB_UPLOAD_SLEEP_SECONDS:-45}"
++    return
++  fi
++  remaining=$(echo "$response" | jq -r '.resources.core.remaining')
++  reset=$(echo "$response" | jq -r '.resources.core.reset')
++  log_info "GitHub API rate limit remaining: ${remaining}"
++  if [ "${remaining}" -lt "${min_remaining}" ]; then
++    local wait_secs=$((reset - $(date +%s) + 5))
++    [ "${wait_secs}" -lt 1 ] && wait_secs=60
++    log_warn "GitHub API rate limit low (${remaining}); sleeping ${wait_secs}s until reset"
++    sleep "${wait_secs}"
++  fi
++}
++
+ clone_and_upload() {
+-  log_info "Uploading entities to GitHub"
++  local glob_pattern="$1"
++  local batch_size="${GITHUB_UPLOAD_BATCH_SIZE:-10}"
++  local batch_sleep="${GITHUB_UPLOAD_SLEEP_SECONDS:-45}"
++  local total_batches batch_num=0 pushed=false
++  log_info "Uploading entities to GitHub (batch=${batch_size}, sleep=${batch_sleep}s between batches)"
+   git_str="${GITHUB_USER}:${GITHUB_TOKEN}@github.com"
+   base_name=$(basename "$GITHUB_REPO")
+   git_dir=$TMP_DIR/${base_name}
+@@ -153,21 +180,44 @@ clone_and_upload() {
+   git config user.email rhdh-performance-bot@redhat.com
+   tmp_branch=$(mktemp -u XXXXXXXXXX)
+   git checkout -b "$tmp_branch"
+-  out=$(python3 -c "import subprocess; print(subprocess.check_output('find \"$TMP_DIR\" -name \"$1\"', shell=True).decode())")
+-
+-  files=()
+-  while IFS= read -r line; do
+-    files+=("$line")
+-  done <<<"$out"
+ 
+-  for filename in "${files[@]}"; do
+-    cp -vf "$filename" "$(basename "$filename")"
+-    git add "$(basename "$filename")"
++  mapfile -t files < <(find "$TMP_DIR" -name "$glob_pattern" | sort -V)
++  if [ "${#files[@]}" -eq 0 ]; then
++    log_error "No files matching ${glob_pattern} in ${TMP_DIR}"
++    popd || return
++    return 1
++  fi
++  total_batches=$(( (${#files[@]} + batch_size - 1) / batch_size ))
++  log_info "Uploading ${#files[@]} shard files in ${total_batches} batches to branch ${tmp_branch}"
++
++  local i=0
++  while [ "$i" -lt "${#files[@]}" ]; do
++    batch_num=$((batch_num + 1))
++    check_github_rate_limit
++    local end=$((i + batch_size))
++    [ "$end" -gt "${#files[@]}" ] && end=${#files[@]}
++    local f
++    for ((j = i; j < end; j++)); do
++      f="${files[j]}"
++      cp -vf "$f" "$(basename "$f")"
++      git add "$(basename "$f")"
++    done
++    git commit -m "catalog entities batch ${batch_num}/${total_batches}"
++    if [ "${pushed}" = false ]; then
++      git push --set-upstream origin "$tmp_branch"
++      pushed=true
++    else
++      git push origin "$tmp_branch"
++    fi
++    log_info "Pushed batch ${batch_num}/${total_batches} (files $((i + 1))-${end})"
++    i=$end
++    if [ "$i" -lt "${#files[@]}" ]; then
++      sleep "${batch_sleep}"
++    fi
+   done
+-  git commit -a -m "commit objects"
+-  git push -f --set-upstream origin "$tmp_branch"
+-  cd ..
+-  sleep 5
++
++  popd || return
++
+   output="${TMP_DIR}/locations.yaml"
+   if [ ! -f "$output" ]; then
+     echo "locations: []" >"$output"
+@@ -179,7 +229,7 @@ clone_and_upload() {
+   for filename in "${files[@]}"; do
+     rm -vf "$filename"
+   done
+-  popd || return
++  log_info "Recorded ${#files[@]} catalog locations in ${output}"
+ }
+ 
+ # shellcheck disable=SC2016
+@@ -562,11 +612,17 @@ create_rbac_policy() {
+ }
+ 
+ keycloak_token() {
+-  curl -s -k "$(keycloak_url)/realms/master/protocol/openid-connect/token" \
++  local _response
++  _response=$(curl -s -k "$(keycloak_url)/realms/master/protocol/openid-connect/token" \
+     -d username=temp-admin \
+     -d "password=$1" \
+     -d 'grant_type=password' \
+-    -d 'client_id=admin-cli' | jq -r ".expires_in_timestamp = $(python3 -c 'from datetime import datetime, timedelta; t_add=int(30); print(int((datetime.now() + timedelta(seconds=t_add)).timestamp()))')"
++    -d 'client_id=admin-cli')
++  if ! echo "$_response" | jq empty 2>/dev/null; then
++    log_token_err "Keycloak token response is not valid JSON ($(echo "$_response" | head -c 120))"
++    return 1
++  fi
++  echo "$_response" | jq -r ".expires_in_timestamp = $(python3 -c 'from datetime import datetime, timedelta; t_add=int(30); print(int((datetime.now() + timedelta(seconds=t_add)).timestamp()))')"
+ }
+ 
+ rhdh_token() {
+@@ -578,8 +634,13 @@ rhdh_token() {
+   CLIENTID="backstage"
+ 
+   if [[ "${AUTH_PROVIDER}" != "keycloak" ]]; then
+-    # Corrected jq command for non-keycloak provider
+-    ACCESS_TOKEN=$(curl -s -k --cookie "$COOKIE" --cookie-jar "$COOKIE" "$(backstage_url)/api/auth/guest/refresh" | jq -r ".backstageIdentity | .expires_in_timestamp = $(python3 -c 'from datetime import datetime, timedelta; t_add=int(50*60); print(int((datetime.now() + timedelta(seconds=t_add)).timestamp()))')")
++    local _guest_response
++    _guest_response=$(curl -s -k --cookie "$COOKIE" --cookie-jar "$COOKIE" "$(backstage_url)/api/auth/guest/refresh")
++    if ! echo "$_guest_response" | jq empty 2>/dev/null; then
++      log_token_err "Guest auth response is not valid JSON ($(echo "$_guest_response" | head -c 120))"
++      return 1
++    fi
++    ACCESS_TOKEN=$(echo "$_guest_response" | jq -r ".backstageIdentity | .expires_in_timestamp = $(python3 -c 'from datetime import datetime, timedelta; t_add=int(50*60); print(int((datetime.now() + timedelta(seconds=t_add)).timestamp()))')")
+     echo "$ACCESS_TOKEN"
+     return
+   fi
+@@ -614,12 +675,21 @@ rhdh_token() {
+   # shellcheck disable=SC2001
+   CODE_URL=$(echo "$CODE_URL" | sed -e 's/\&amp;/\&/g')
+ 
+-  ACCESS_TOKEN=$(curl -k -sSL --dump-header "$TMP_DIR/get_rhdh_token_headers.log" --cookie "$COOKIE" --cookie-jar "$COOKIE" \
++  local _token_response
++  _token_response=$(curl -k -sSL --dump-header "$TMP_DIR/get_rhdh_token_headers.log" --cookie "$COOKIE" --cookie-jar "$COOKIE" \
+     --data-urlencode "code=$code" \
+     --data-urlencode "session_state=$session_state" \
+     --data-urlencode "state=$state" \
+-    "$CODE_URL" | tee -a "$TMP_DIR/get_rhdh_token.log" | jq ".backstageIdentity | .expires_in_timestamp = $(python3 -c 'from datetime import datetime, timedelta; t_add=int(30*60); print(int((datetime.now() + timedelta(seconds=t_add)).timestamp()))')")
++    "$CODE_URL")
++  echo "$_token_response" >>"$TMP_DIR/get_rhdh_token.log"
+   echo "" >>"$TMP_DIR/get_rhdh_token.log"
++  if ! echo "$_token_response" | jq empty 2>/dev/null; then
++    local _hint
++    _hint=$(echo "$_token_response" | grep -oiE '(502 Bad Gateway|504 Gateway Time-out|timeout|error|User not found)' | head -1)
++    log_token_err "RHDH token response is not valid JSON${_hint:+ (${_hint})} — backend may be busy with LDAP sync"
++    return 1
++  fi
++  ACCESS_TOKEN=$(echo "$_token_response" | jq ".backstageIdentity | .expires_in_timestamp = $(python3 -c 'from datetime import datetime, timedelta; t_add=int(30*60); print(int((datetime.now() + timedelta(seconds=t_add)).timestamp()))')")
+   echo "$ACCESS_TOKEN"
+ }
+ 
+diff --git a/ci-scripts/rhdh-setup/deploy.sh b/ci-scripts/rhdh-setup/deploy.sh
+index e2506f7..b672d16 100755
+--- a/ci-scripts/rhdh-setup/deploy.sh
++++ b/ci-scripts/rhdh-setup/deploy.sh
+@@ -11,10 +11,22 @@ source "${SCRIPT_DIR}/common.sh"
+ # shellcheck disable=SC1091
+ source "${SCRIPT_DIR}/create_resource.sh"
+ 
++export SKIP_GITHUB="${SKIP_GITHUB:-false}"
++
+ [ -n "${QUAY_TOKEN}" ]
+-[ -n "${GITHUB_TOKEN}" ]
+-[ -n "${GITHUB_USER}" ]
+-[ -n "${GITHUB_REPO}" ]
++
++if [ "${SKIP_GITHUB}" = "true" ]; then
++    export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
++    export GITHUB_USER="${GITHUB_USER:-}"
++    export GITHUB_REPO="${GITHUB_REPO:-}"
++    export RBAC_POLICY_UPLOAD_TO_GITHUB=false
++    export PRE_LOAD_DB="${PRE_LOAD_DB:-false}"
++    log_info "SKIP_GITHUB=true: GitHub catalog population and RBAC upload disabled"
++else
++    [ -n "${GITHUB_TOKEN}" ]
++    [ -n "${GITHUB_USER}" ]
++    [ -n "${GITHUB_REPO}" ]
++fi
+ 
+ export RHDH_NAMESPACE=${RHDH_NAMESPACE:-rhdh-performance}
+ export RHDH_HELM_RELEASE_NAME=${RHDH_HELM_RELEASE_NAME:-rhdh}
+@@ -69,6 +81,9 @@ export RHDH_OLM_OPERATOR_RESOURCES_EPHEMERAL_STORAGE_REQUESTS=${RHDH_OLM_OPERATO
+ export PRE_LOAD_DB="${PRE_LOAD_DB:-true}"
+ export ENSURE_CATALOG_POPULATION_TIMEOUT=${ENSURE_CATALOG_POPULATION_TIMEOUT:-3600}
+ export CATALOG_REFRESH_INTERVAL=${CATALOG_REFRESH_INTERVAL_MINUTES:-50}
++# LDAP provider task timeout (ISO-8601 duration). Must exceed full read+commit+stitch.
++# Default PT50M is too short for large orgs (20k users/350k groups took ~54m just to read).
++export LDAP_SCHEDULE_TIMEOUT=${LDAP_SCHEDULE_TIMEOUT:-PT50M}
+ export BACKSTAGE_USER_COUNT="${BACKSTAGE_USER_COUNT:-1}"
+ export GROUP_COUNT="${GROUP_COUNT:-1}"
+ export API_COUNT="${API_COUNT:-1}"
+@@ -332,6 +347,83 @@ ldap_install() {
+     wait_to_start deployment rhdh-ldap 300 300
+ }
+ 
++rhbk_operator_source_namespace() {
++    local ns="${RHBK_OPERATOR_SOURCE_NAMESPACE:-}"
++    if [[ -n "$ns" ]] && $cli get deployment rhbk-operator -n "$ns" >/dev/null 2>&1; then
++        echo "$ns"
++        return 0
++    fi
++    $cli get deployment -A -o jsonpath='{range .items[?(@.metadata.name=="rhbk-operator")]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null \
++        | grep -v "^${RHDH_NAMESPACE}$" | head -1
++}
++
++bootstrap_rhbk_operator() {
++    local source_namespace role clusterrolebinding
++    source_namespace=$(rhbk_operator_source_namespace)
++    if [[ -z "$source_namespace" ]]; then
++        log_error "No running rhbk-operator deployment found to bootstrap from"
++        return 1
++    fi
++    log_info "Bootstrapping rhbk-operator in $RHDH_NAMESPACE from $source_namespace (catalog subscription unavailable)"
++    export RHDH_NAMESPACE
++
++    $cli get sa rhbk-operator -n "$source_namespace" -o yaml \
++        | yq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.ownerReferences, .secrets, .imagePullSecrets) | .metadata.namespace = env(RHDH_NAMESPACE)' \
++        | $clin apply -f -
++
++    while read -r role; do
++        [[ -n "$role" ]] || continue
++        $cli get role "$role" -n "$source_namespace" -o yaml \
++            | yq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.ownerReferences) | .metadata.namespace = env(RHDH_NAMESPACE)' \
++            | $clin apply -f -
++        $cli get rolebinding "$role" -n "$source_namespace" -o yaml \
++            | yq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.ownerReferences) | .metadata.namespace = env(RHDH_NAMESPACE) | .subjects[0].namespace = env(RHDH_NAMESPACE)' \
++            | $clin apply -f -
++    done < <($cli get role -n "$source_namespace" -o name 2>/dev/null | sed -n 's|role.rbac.authorization.k8s.io/||p' | grep '^rhbk-operator\.')
++
++    while read -r clusterrolebinding; do
++        [[ -n "$clusterrolebinding" ]] || continue
++        if ! $cli get clusterrolebinding "$clusterrolebinding" -o jsonpath='{.subjects[*].namespace}' 2>/dev/null | tr ' ' '\n' | grep -qx "$RHDH_NAMESPACE"; then
++            $cli patch clusterrolebinding "$clusterrolebinding" --type='json' \
++                -p="[{\"op\":\"add\",\"path\":\"/subjects/-\",\"value\":{\"kind\":\"ServiceAccount\",\"name\":\"rhbk-operator\",\"namespace\":\"$RHDH_NAMESPACE\"}}]" \
++                >/dev/null 2>&1 || true
++        fi
++    done < <($cli get clusterrolebinding -o name 2>/dev/null | sed -n 's|clusterrolebinding.rbac.authorization.k8s.io/||p' | grep '^rhbk-operator\.')
++
++    $cli get deploy rhbk-operator -n "$source_namespace" -o yaml \
++        | yq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.ownerReferences, .metadata.annotations."deployment.kubernetes.io/revision", .status, .spec.template.metadata.creationTimestamp) | .metadata.namespace = env(RHDH_NAMESPACE) | .spec.template.spec.serviceAccountName = "rhbk-operator" | .spec.template.metadata.annotations["olm.targetNamespaces"] = env(RHDH_NAMESPACE) | .spec.template.metadata.annotations["olm.operatorNamespace"] = env(RHDH_NAMESPACE)' \
++        | $clin apply -f -
++
++    wait_to_start deployment rhbk-operator 300 300
++}
++
++ensure_rhbk_operator() {
++    if $clin get deployment rhbk-operator >/dev/null 2>&1; then
++        log_info "rhbk-operator already present in $RHDH_NAMESPACE"
++        wait_to_start deployment rhbk-operator 300 300
++        return 0
++    fi
++
++    envsubst <template/keycloak/keycloak-op.yaml | $clin apply -f -
++    local timeout_timestamp
++    timeout_timestamp=$(python3 -c "from datetime import datetime, timedelta; print(int((datetime.now() + timedelta(seconds=60)).timestamp()))")
++    while ! $clin get deployment rhbk-operator >/dev/null 2>&1; do
++        if [ "$(date "+%s")" -gt "$timeout_timestamp" ]; then
++            break
++        fi
++        sleep 10
++    done
++
++    if $clin get deployment rhbk-operator >/dev/null 2>&1; then
++        wait_to_start deployment rhbk-operator 300 300
++        return 0
++    fi
++
++    log_warn "Namespace-local rhbk-operator subscription did not produce a deployment; trying cluster bootstrap"
++    $clin delete subscription rhbk-operator --ignore-not-found=true --wait=false
++    bootstrap_rhbk_operator
++}
++
+ keycloak_install() {
+     export KEYCLOAK_CLIENT_SECRET
+     export COOKIE_SECRET
+@@ -340,13 +432,11 @@ keycloak_install() {
+         dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d -- '\n' | tr -- '+/' '-_'
+         echo
+     )
+-    envsubst <template/keycloak/keycloak-op.yaml | $clin apply -f -
+     envsubst <template/backstage/perf-test-secrets.yaml | $clin apply -f -
+-    grep -m 1 "rhbk-operator" <($clin get pods -w)
+-    wait_to_start deployment rhbk-operator 300 300
++    ensure_rhbk_operator
+ 
+     export KEYCLOAK_DB_PASSWORD
+-    KEYCLOAK_DB_PASSWORD=$(mktemp -u XXXXXXXXXX)
++    KEYCLOAK_DB_PASSWORD=${KEYCLOAK_DB_PASSWORD:-$(mktemp -u XXXXXXXXXX)}
+     export KEYCLOAK_DB_STORAGE
+     KEYCLOAK_DB_STORAGE=${KEYCLOAK_DB_STORAGE:-${RHDH_DB_STORAGE:-1Gi}}
+ 
+@@ -422,8 +512,16 @@ get_catalog_entity_count() {
+     entity_type=$1
+     ACCESS_TOKEN=$(get_token "rhdh" "$rhdh_token_timeout")
+     log_file="$TMP_DIR/get_$(echo "$entity_type" | tr '[:upper:]' '[:lower:]')_count.log"
+-    curl -s -k "$(backstage_url)/api/catalog/entities/by-query?limit=0&filter=kind%3D${entity_type}" --cookie "$COOKIE" --cookie-jar "$COOKIE" -H 'Content-Type: application/json' -H 'Authorization: Bearer '"$ACCESS_TOKEN" | tee -a "$log_file" | jq -r '.totalItems'
++    local _cat_response
++    _cat_response=$(curl -s -k "$(backstage_url)/api/catalog/entities/by-query?limit=0&filter=kind%3D${entity_type}" --cookie "$COOKIE" --cookie-jar "$COOKIE" -H 'Content-Type: application/json' -H 'Authorization: Bearer '"$ACCESS_TOKEN")
++    echo "$_cat_response" >>"$log_file"
+     echo "" >>"$log_file"
++    if ! echo "$_cat_response" | jq empty 2>/dev/null; then
++        log_warn "Catalog $entity_type count response is not valid JSON ($(echo "$_cat_response" | head -c 120))"
++        echo "0"
++        return
++    fi
++    echo "$_cat_response" | jq -r '.totalItems'
+ }
+ 
+ ###############################################################################
+@@ -438,12 +536,21 @@ wait_for_rhdh_db_to_start() {
+     fi
+ }
+ 
++pgo_is_available_cluster_wide() {
++    local pgo_namespace="${PGO_CLUSTER_NAMESPACE:-openshift-operators}"
++    $cli get deployment pgo -n "$pgo_namespace" >/dev/null 2>&1
++}
++
+ setup_rhdh_db() {
+     log_info "Setting up RHDH database"
+     setup_rhdh_namespace
+     setup_operator_group
+-    envsubst <template/backstage/rhdh-db/crunchy-postgres-op.yaml | $clin apply -f -
+-    wait_to_start deployment pgo 300 300
++    if pgo_is_available_cluster_wide; then
++        log_info "Cluster-wide PGO found in ${PGO_CLUSTER_NAMESPACE:-openshift-operators}; skipping namespace-local operator install"
++    else
++        envsubst <template/backstage/rhdh-db/crunchy-postgres-op.yaml | $clin apply -f -
++        wait_to_start deployment pgo 300 300
++    fi
+     export RHDH_DB_MAX_CONNECTIONS PGBOUNCER_MAX_CLIENT_CONNECTIONS PGBOUNCER_DEFAULT_POOL_SIZE PGBOUNCER_MAX_DB_CONNECTIONS PGBOUNCER_MAX_USER_CONNECTIONS
+ 
+     # PgBouncer is optional: disabled when ENABLE_PGBOUNCER is false or PGBOUNCER_REPLICAS is 0
+@@ -951,6 +1058,9 @@ backstage_install() {
+         echo "locations: []" >"$TMP_DIR/locations.yaml"
+         create_objs
+         yq -i '.catalog.locations |= . + load("'"$TMP_DIR/locations.yaml"'").locations' "$TMP_DIR/app-config.yaml"
++    elif [ -f "$TMP_DIR/locations.yaml" ] && [ "$(yq '.locations | length' "$TMP_DIR/locations.yaml" 2>/dev/null || echo 0)" -gt 0 ]; then
++        log_info "PRE_LOAD_DB=false: reusing $(yq '.locations | length' "$TMP_DIR/locations.yaml") catalog locations from $TMP_DIR/locations.yaml"
++        yq -i '.catalog.locations |= . + load("'"$TMP_DIR/locations.yaml"'").locations' "$TMP_DIR/app-config.yaml"
+     fi
+     if [ -n "${CATALOG_REFRESH_INTERVAL_MINUTES}" ]; then
+         yq -i '.catalog.processingInterval.hours = 0' "$TMP_DIR/app-config.yaml"
+@@ -958,6 +1068,10 @@ backstage_install() {
+         yq -i '.catalog.providers.ldapOrg.default.schedule.frequency.hours = 0' "$TMP_DIR/app-config.yaml"
+         yq -i '.catalog.providers.ldapOrg.default.schedule.frequency.minutes = '"${CATALOG_REFRESH_INTERVAL_MINUTES}"'' "$TMP_DIR/app-config.yaml"
+     fi
++    if [ -n "${LDAP_SCHEDULE_TIMEOUT}" ]; then
++        log_info "Setting LDAP schedule timeout to ${LDAP_SCHEDULE_TIMEOUT}"
++        yq -i '.catalog.providers.ldapOrg.default.schedule.timeout = "'"${LDAP_SCHEDULE_TIMEOUT}"'"' "$TMP_DIR/app-config.yaml"
++    fi
+     until $clin create configmap app-config-rhdh --from-file "app-config.rhdh.yaml=$TMP_DIR/app-config.yaml"; do $clin delete configmap app-config-rhdh --ignore-not-found=true; done
+     if [ "$INSTALL_METHOD" == "olm" ]; then
+         mark_resource_for_rhdh configmap app-config-rhdh
+diff --git a/ci-scripts/rhdh-setup/template/backstage/app-config.yaml b/ci-scripts/rhdh-setup/template/backstage/app-config.yaml
+index 2764ff6..fc44c42 100644
+--- a/ci-scripts/rhdh-setup/template/backstage/app-config.yaml
++++ b/ci-scripts/rhdh-setup/template/backstage/app-config.yaml
+@@ -7,7 +7,7 @@ organization:
+ integrations:
+   github:
+     - host: github.com
+-      #token: ${GITHUB_TOKEN}
++      token: ${GITHUB_TOKEN}
+ catalog:
+   processingInterval:
+     minutes: 60
+@@ -38,6 +38,8 @@ catalog:
+           initialDelay: PT1M
+           frequency:
+             minutes: 50
++          # Overridden by LDAP_SCHEDULE_TIMEOUT / deploy.sh for large-scale syncs.
++          # Default PT50M is too short for XL LDAP reads (~54m for 20k/350k).
+           timeout: PT50M
+ techdocs:
+   builder: local
+diff --git a/ci-scripts/rhdh-setup/template/component/api.template b/ci-scripts/rhdh-setup/template/component/api.template
+index e2b4780..9f982d7 100644
+--- a/ci-scripts/rhdh-setup/template/component/api.template
++++ b/ci-scripts/rhdh-setup/template/component/api.template
+@@ -8,5 +8,15 @@ spec:
+   type: openapi
+   lifecycle: production
+   owner: g${grp_indx}
+-  definition:
+-    $text: https://github.com/APIs-guru/openapi-directory/blob/main/APIs/archive.org/wayback/1.0.0/openapi.yaml
++  definition: |
++    openapi: 3.0.0
++    info:
++      title: wayback-archive-${api_indx}
++      version: 1.0.0
++    paths:
++      /health:
++        get:
++          summary: Health check
++          responses:
++            '200':
++              description: OK
+diff --git a/ci-scripts/setup.sh b/ci-scripts/setup.sh
+index 94ea2af..1635da8 100755
+--- a/ci-scripts/setup.sh
++++ b/ci-scripts/setup.sh
+@@ -11,11 +11,23 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ source "$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$SCRIPT_DIR"/../test.env)"
+ 
+ export GITHUB_TOKEN GITHUB_USER GITHUB_REPO QUAY_TOKEN KUBECONFIG PRE_LOAD_DB
++export SKIP_GITHUB="${SKIP_GITHUB:-false}"
+ 
+-GITHUB_TOKEN=$(cat /usr/local/ci-secrets/backstage-performance/github.token)
+-GITHUB_USER=$(cat /usr/local/ci-secrets/backstage-performance/github.user)
+-GITHUB_REPO=$(cat /usr/local/ci-secrets/backstage-performance/github.repo)
+-QUAY_TOKEN=$(cat /usr/local/ci-secrets/backstage-performance/quay.token)
++CI_SECRETS_DIR="${CI_SECRETS_DIR:-/usr/local/ci-secrets/backstage-performance}"
++SKIP_GITHUB="${SKIP_GITHUB:-false}"
++
++QUAY_TOKEN=$(cat "${CI_SECRETS_DIR}/quay.token")
++
++if [ "${SKIP_GITHUB}" = "true" ]; then
++    export GITHUB_TOKEN=""
++    export GITHUB_USER=""
++    export GITHUB_REPO=""
++    echo "SKIP_GITHUB=true: skipping GitHub secrets and rate-limit watcher"
++else
++    GITHUB_TOKEN=$(cat "${CI_SECRETS_DIR}/github.token")
++    GITHUB_USER=$(cat "${CI_SECRETS_DIR}/github.user")
++    GITHUB_REPO=$(cat "${CI_SECRETS_DIR}/github.repo")
++fi
+ 
+ export RHDH_DEPLOYMENT_REPLICAS=${RHDH_DEPLOYMENT_REPLICAS:-1}
+ export RHDH_DB_REPLICAS=${RHDH_DB_REPLICAS:-1}
+@@ -30,35 +42,37 @@ export GROUP_COUNT=${GROUP_COUNT:-250}
+ ARTIFACT_DIR=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${ARTIFACT_DIR:-.artifacts}")
+ mkdir -p "$ARTIFACT_DIR"
+ 
+-rate_limits_csv="${ARTIFACT_DIR}/gh-rate-limits-remaining.setup.csv"
++if [ "${SKIP_GITHUB}" != "true" ]; then
++    rate_limits_csv="${ARTIFACT_DIR}/gh-rate-limits-remaining.setup.csv"
+ 
+-echo "Starting a watch for GH rate limits remainig (setup)"
+-IFS="," read -ra kvs <<<"$(cat /usr/local/ci-secrets/backstage-performance/github.accounts)"
+-echo -n "Time" >"$rate_limits_csv"
+-for kv in "${kvs[@]}"; do
+-    IFS=":" read -ra name_token <<<"$kv"
+-    echo -n ";${name_token[0]}" >>"$rate_limits_csv"
+-done
+-echo >>"$rate_limits_csv"
+-
+-while true; do
+-    timestamp=$(printf "%s" "$(date -u +'%FT%T')")
+-    echo -n "$timestamp" >>"$rate_limits_csv"
++    echo "Starting a watch for GH rate limits remainig (setup)"
++    IFS="," read -ra kvs <<<"$(cat "${CI_SECRETS_DIR}/github.accounts")"
++    echo -n "Time" >"$rate_limits_csv"
+     for kv in "${kvs[@]}"; do
+         IFS=":" read -ra name_token <<<"$kv"
+-        rate=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token ${name_token[1]}" -H "X-GitHub-Api-Version: 2022-11-28" 'https://api.github.com/rate_limit' | jq -rc '(.rate.remaining|tostring)')
+-        echo -n ";$rate" >>"$rate_limits_csv"
++        echo -n ";${name_token[0]}" >>"$rate_limits_csv"
+     done
+     echo >>"$rate_limits_csv"
+-    sleep 10s
+-done &
+ 
+-rate_limit_exit=$!
+-kill_rate_limits() {
+-    echo "Stopping the watch for GH rate limits remainig (setup)"
+-    kill $rate_limit_exit || true
+-}
+-trap kill_rate_limits EXIT
++    while true; do
++        timestamp=$(printf "%s" "$(date -u +'%FT%T')")
++        echo -n "$timestamp" >>"$rate_limits_csv"
++        for kv in "${kvs[@]}"; do
++            IFS=":" read -ra name_token <<<"$kv"
++            rate=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token ${name_token[1]}" -H "X-GitHub-Api-Version: 2022-11-28" 'https://api.github.com/rate_limit' | jq -rc '(.rate.remaining|tostring)')
++            echo -n ";$rate" >>"$rate_limits_csv"
++        done
++        echo >>"$rate_limits_csv"
++        sleep 10s
++    done &
++
++    rate_limit_exit=$!
++    kill_rate_limits() {
++        echo "Stopping the watch for GH rate limits remainig (setup)"
++        kill $rate_limit_exit || true
++    }
++    trap kill_rate_limits EXIT
++fi
+ 
+ echo "$(date -u -Ins) Running deployment script"
+ make ci-deploy

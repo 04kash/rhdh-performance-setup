@@ -23,6 +23,8 @@
 
 ## HP-recommended metrics
 
+See [docs/hp.md](../../docs/hp.md) for what these measurements mean.
+
 | Measurement | Value |
 |-------------|------:|
 | Peak processing lag (avg overdue) | ~7479 s (~2.1 h) |

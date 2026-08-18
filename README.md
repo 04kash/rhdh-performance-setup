@@ -20,6 +20,9 @@ until those changes land upstream. It also holds env overlays and recorded resul
 
 See [UPSTREAM.md](UPSTREAM.md) for what belongs in the main harness vs here.
 
+Background on why we measure processing lag / stitch backlog:
+[docs/hp.md](docs/hp.md) (cleaned notes from HP’s Backstage scale talk).
+
 ## Prerequisites
 
 1. **OpenShift cluster** with admin `oc` access (`export KUBECONFIG=...`)
@@ -100,6 +103,7 @@ OpenShift console URL is cluster-specific — use `oc whoami --show-console` aft
 ## Repository layout
 
 ```
+docs/              # Background notes (e.g. HP scale talk)
 harness-patches/   # Patch + scenarios/isolation scripts (vendored from local harness)
 env/               # Scenario env overlays (no secrets)
 scripts/           # apply-overlay, metrics poller

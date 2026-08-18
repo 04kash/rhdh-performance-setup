@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Patch stock backstage-performance with vendored harness changes + isolation scenarios.
+# Patch stock backstage-performance with this repo's harness changes + isolation scenarios.
 # Usage: ./scripts/apply-overlay.sh /path/to/backstage-performance
 set -euo pipefail
 
@@ -27,7 +27,7 @@ if git apply --check "${PATCH}" 2>/dev/null; then
 elif git apply --reverse --check "${PATCH}" 2>/dev/null; then
   echo "Patch already applied — skipping"
 else
-  echo "ERROR: patch does not apply cleanly. Upstream may have drifted." >&2
+  echo "ERROR: patch does not apply cleanly. Harness base may have drifted." >&2
   echo "Try: git apply --check ${PATCH}" >&2
   echo "See harness-patches/README.md to refresh the patch." >&2
   exit 1

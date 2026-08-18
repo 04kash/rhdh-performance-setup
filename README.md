@@ -4,9 +4,10 @@ Thin runbook and env overlays for running the **combined XL ingest** scenario
 (30k users / 500k groups / 35k Components / 35k APIs) on memory-constrained
 OpenShift clusters.
 
-This repo vendors the **minimal harness patches** needed to run combined XL on stock
-[backstage-performance](https://github.com/redhat-performance/backstage-performance)
-until those changes land upstream. It also holds env overlays and recorded results.
+This repo holds harness patches, isolation scenarios, env overlays, and recorded
+results for use with stock
+[backstage-performance](https://github.com/redhat-performance/backstage-performance).
+It is maintained separately — not as an upstream contribution.
 
 ## vs official performance team preset
 
@@ -18,7 +19,7 @@ until those changes land upstream. It also holds env overlays and recorded resul
 | GitHub entities | Regenerated each deploy | **Pre-pushed, reused** |
 | Orchestrator | Enabled | Disabled |
 
-See [UPSTREAM.md](UPSTREAM.md) for what belongs in the main harness vs here.
+See [HARNESS.md](HARNESS.md) for what the patch changes.
 
 Background on why we measure processing lag / stitch backlog:
 [docs/hp.md](docs/hp.md) (cleaned notes from HP’s Backstage scale talk).
@@ -26,7 +27,7 @@ Background on why we measure processing lag / stitch backlog:
 ## Prerequisites
 
 1. **OpenShift cluster** with admin `oc` access (`export KUBECONFIG=...`)
-2. **backstage-performance** checkout (upstream `main` — patches applied by this repo)
+2. **backstage-performance** checkout (stock `main` — patches applied by this repo)
 3. **Secrets** (never commit these):
    - `quay.token` — image pull secret for Quay.io
    - `github.token`, `github.user`, `github.repo` — scratch repo for catalog YAML
@@ -39,7 +40,7 @@ Background on why we measure processing lag / stitch backlog:
 git clone https://github.com/redhat-performance/backstage-performance.git
 git clone https://github.com/04kash/rhdh-performance-setup.git
 
-# 2. Apply vendored harness patch + isolation scenarios
+# 2. Apply harness patch + isolation scenarios
 cd rhdh-performance-setup
 chmod +x scripts/*.sh harness-patches/scenarios/isolation/*.sh
 ./scripts/apply-overlay.sh ../backstage-performance
@@ -60,7 +61,7 @@ cp .tmp/locations.yaml scenarios/isolation/combined-xl-locations.yaml
 ./scenarios/isolation/run.sh combined-xl-reuse-github
 ```
 
-`apply-overlay.sh` applies `harness-patches/0001-harness-core.patch` to upstream
+`apply-overlay.sh` applies `harness-patches/0001-harness-core.patch` to stock
 `deploy.sh` / `setup.sh` / templates, then copies `scenarios/isolation/`.
 
 `run.sh` runs `make clean-all` then `ci-scripts/setup.sh`. With `PRE_LOAD_DB=false`,
@@ -104,11 +105,11 @@ OpenShift console URL is cluster-specific — use `oc whoami --show-console` aft
 
 ```
 docs/              # Background notes (e.g. HP scale talk)
-harness-patches/   # Patch + scenarios/isolation scripts (vendored from local harness)
+harness-patches/   # Patch + scenarios/isolation scripts
 env/               # Scenario env overlays (no secrets)
 scripts/           # apply-overlay, metrics poller
 results/           # Summaries and analysis only (no raw logs)
-UPSTREAM.md        # What to contribute back to backstage-performance
+HARNESS.md         # What the patch changes vs stock harness
 ```
 
 ## Security

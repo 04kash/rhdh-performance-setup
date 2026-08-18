@@ -1,6 +1,7 @@
 # Harness patches for stock backstage-performance
 
-Vendored changes not yet merged upstream. Apply with `scripts/apply-overlay.sh`.
+Local patches and isolation scripts applied with `scripts/apply-overlay.sh`.
+This overlay is maintained here only — not as an upstream contribution.
 
 ## Contents
 
@@ -14,7 +15,7 @@ Vendored changes not yet merged upstream. Apply with `scripts/apply-overlay.sh`.
 - `SKIP_GITHUB` — LDAP-only runs without GitHub secrets
 - `LDAP_SCHEDULE_TIMEOUT` — avoid re-sync at 500k groups
 - `PRE_LOAD_DB=false` location reuse
-- IBM cluster: PGO skip, rhbk-operator bootstrap, stable Keycloak DB password
+- Shared-cluster: PGO skip, rhbk-operator bootstrap, stable Keycloak DB password
 - GitHub token in app-config for private catalog locations
 - Inline OpenAPI in API template
 
@@ -39,6 +40,8 @@ git worktree add /tmp/bp-test origin/main
 cd /tmp/bp-test && git apply --check /path/to/0001-harness-core.patch
 ```
 
-## Upstream base
+## Harness base
 
-Patch generated against `redhat-performance/backstage-performance` @ `274b6a6` (or current `origin/main` at time of vendoring). Re-apply may fail after upstream drift — refresh the patch or drop it once changes are merged.
+Patch generated against `redhat-performance/backstage-performance` @ `274b6a6`
+(or `origin/main` at time of generation). Re-apply may fail after harness drift —
+refresh the patch against a newer base when that happens.

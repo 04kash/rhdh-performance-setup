@@ -1,8 +1,8 @@
-# Isolation scenarios (vendored)
+# Isolation scenarios
 
 Run LDAP, GitHub catalog, or combined XL ingest in isolation.
 
-**Requires:** `apply-overlay.sh` has patched upstream `backstage-performance` and installed these files.
+**Requires:** `apply-overlay.sh` has patched stock `backstage-performance` and installed these files.
 
 ## Combined XL on small clusters (primary use case)
 
@@ -35,4 +35,4 @@ export RHDH_NAMESPACE=rhdh-performance-xl
 | `LDAP_SCHEDULE_TIMEOUT` | PT6H | PT10H |
 | `ENSURE_CATALOG_POPULATION_TIMEOUT` | 25200s | 43200s |
 
-Default upstream `PT50M` LDAP timeout retriggers sync before 500k groups finish.
+Stock harness default `PT50M` LDAP timeout retriggers sync before 500k groups finish.

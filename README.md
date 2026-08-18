@@ -7,7 +7,6 @@ OpenShift clusters.
 This repo holds harness patches, isolation scenarios, env overlays, and recorded
 results for use with stock
 [backstage-performance](https://github.com/redhat-performance/backstage-performance).
-It is maintained separately — not as an upstream contribution.
 
 ## vs official performance team preset
 

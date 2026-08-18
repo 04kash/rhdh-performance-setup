@@ -1,0 +1,46 @@
+{
+  "scenario": "combined-xl-reuse-github",
+  "timestamp": "2026-08-14T23:24:56Z",
+  "cluster": "IBM QE (c104-e-us-east)",
+  "config": {
+    "users": 30000,
+    "groups": 500000,
+    "component_count": 35000,
+    "api_count": 35000,
+    "replicas": 1,
+    "memory_requests": "4Gi",
+    "memory_limits": "8Gi",
+    "nodejs_max_heap_mb": 6144,
+    "github_locations": 140,
+    "ldap_schedule_timeout": "PT6H"
+  },
+  "results": {
+    "verdict": "PASS",
+    "ldap": {
+      "final_user_count": 30001,
+      "final_group_count": 500001,
+      "ingest_commit_at": "2026-08-14T17:35:58Z",
+      "ingest_read_seconds_approx": 3321.0,
+      "stitch_users_done_at": "2026-08-14T19:31:14Z",
+      "stitch_groups_done_at": "2026-08-14T20:26:43Z",
+      "stitch_queue_at_completion": 0
+    },
+    "github": {
+      "final_component_count": 35000,
+      "final_api_count": 35000,
+      "api_errors": 0
+    },
+    "runtime": {
+      "pod_restarts": 0,
+      "oom_killed_containers": 0,
+      "memory_at_completion_mi": 2337,
+      "javascript_heap_oom": false
+    },
+    "hp_style_metrics": {
+      "peak_avg_overdue_lag_seconds": 7478.8,
+      "peak_stitch_queue": 281908,
+      "peak_overdue_unprocessed": 233260,
+      "backend_start_to_all_targets_stitched_seconds_approx": 13695.0
+    }
+  }
+}

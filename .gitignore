@@ -1,0 +1,17 @@
+# Never commit secrets or local overrides with real credentials
+.setenv.local
+*.token
+*.kubeconfig
+kubeconfig
+.env.local
+
+# Harness working data and large artifacts
+.tmp/
+*.log
+catalog-lag.csv
+poll-catalog-lag.log
+
+# OS / editor
+.DS_Store
+*.swp
+*~

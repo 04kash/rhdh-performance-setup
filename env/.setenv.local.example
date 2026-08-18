@@ -1,0 +1,13 @@
+#!/bin/bash
+# Copy to your backstage-performance checkout as .setenv.local (do not commit).
+# Fill paths to your local secret files.
+
+export QUAY_TOKEN GITHUB_TOKEN GITHUB_USER GITHUB_REPO
+
+QUAY_TOKEN="$(cat "${CI_SECRETS_DIR:-/path/to/ci-secrets}/quay.token")"
+GITHUB_TOKEN="$(cat "${CI_SECRETS_DIR:-/path/to/ci-secrets}/github.token")"
+GITHUB_USER="$(cat "${CI_SECRETS_DIR:-/path/to/ci-secrets}/github.user)"
+GITHUB_REPO="$(cat "${CI_SECRETS_DIR:-/path/to/ci-secrets}/github.repo)"
+
+# Optional: stable Keycloak DB password across clean-all (must match env overlay if set)
+# export KEYCLOAK_DB_PASSWORD='your-stable-password'
